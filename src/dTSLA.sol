@@ -5,7 +5,9 @@ import {ConfirmedOwner} from "@chainlink/contracts/src/v0.8/shared/access/Confir
 import {FunctionsClient} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0_0/FunctionsClient.sol";
 import {FunctionsRequest} from "@chainlink/contracts/src/v0.8/functions/dev/v1_0_0/libraries/FunctionsRequest.sol";
 import {AggregatorV3Interface} from "@chainlink/contracts/src/v0.8/interfaces/AggregatorV3Interface.sol";
-contract dTSLA is ConfirmedOwner , FunctionsClient {
+import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
+
+contract dTSLA is ConfirmedOwner , FunctionsClient , ERC20  {
     using FunctionsRequest for FunctionsRequest.Request;
 enum MintOrRedeem {
 mint , 
@@ -21,8 +23,18 @@ string private s_mintSourceCode ;
 uint64 immutable i_SubId;
 uint32 constant callbackGasLimit = 300_000;
 bytes32 constant donId = 0x66756e2d657468657265756d2d7365706f6c69612d3100000000000000000000;
+address constant SEPOLI_TSLA_PRICE_FEED = 0xc59E3633BAAC79493d908e63626716e204A45EdF ;  // acutually it is for the link/usd price feed bcz sepoli supoorted only this 
+uint256 constant ADDITIONAL_FEDD_PRECISION = 1e18;
+uint256 constant PRECISION = 1e18;
+uint256 constant COLLATERAL_PRECISION = 100 ; 
+uint256 constant COLLATERAL_RATIO = 200 ;
+uint256 s_portfolioBalance  ;
 mapping(bytes32 requstId => dTslaRequest request ) private s_requestIdToRequest; 
-constructor(string memory mintSourceCode , uint64 subscriptionId ) ConfirmedOwner(msg.sender) FunctionsClient(SEPOLI_FUNCTION_ROUTER) {
+constructor(string memory mintSourceCode , uint64 subscriptionId ) 
+ConfirmedOwner(msg.sender) 
+FunctionsClient(SEPOLI_FUNCTION_ROUTER) 
+    ERC20("dtsla","dtsla")
+{
     s_mintSourceCode = mintSourceCode; 
     i_SubId = subscriptionId; 
 }
@@ -53,15 +65,21 @@ function _mintFullFillRequest(bytes32 requestId, bytes memory response) internal
 
 //our chainlink function see how much tsla token is bought  
 //return the amount of tsla iin the usdc , mint the dtsla 
-
 uint256 amountOfTokenToMint = s_requestIdToRequest[requestId].amountOfToken;
 
 // we want to know how much tsla in $ there is collateral in the bank 
 // how much tsla in $ we want to mint  
+// reading the response 
+s_portfolioBalance = uint256(bytes32(response)) ;
+if (_getCollateralRatioAdjustedTotalValue(amountOfTokenToMint) > s_portfolioBalance) {
+    revert("Not enough collateral in the bank");
+} 
+if (amountOfTokenToMint != 0 ) {
+  _mint(s_requestIdToRequest[requestId].requester, amountOfTokenToMint); 
 
+}
 
-
-} // mint the dtsla token
+}// mint the dtsla token
 
 
 // user request to sell the TSLA for the usdc (redeemption token ) 
@@ -69,6 +87,8 @@ uint256 amountOfTokenToMint = s_requestIdToRequest[requestId].amountOfToken;
 // 1 sell tsla on the brokrage 
 // 2 buy usdc on the brokage 
 // 3 send usdc to this contrat for the user
+
+// these are the fucntion which keep the price packed 
 
 function sendRedeemRequest() external {} // redeem the dtsla token 
 
@@ -83,16 +103,21 @@ function _redeemFullFillRequest(bytes32 requestId, bytes memory response) intern
     }
   }
 
+
 // currrently incomplete 
-  function _getCollateralRatioAdjustedTotalValue(uint256 addedNumberOfToken) internal  view {
-    uint256 calculatedValue =  getCalculatednewValue(addedNumberOfToken);
+  function _getCollateralRatioAdjustedTotalValue(uint256 addedNumberOfTokenToMint) internal  view returns (uint256) {
+    uint256 calculatedNewTotalValue =  getCalculatedNewTotalValue(addedNumberOfTokenToMint);
+    return ( (calculatedNewTotalValue * COLLATERAL_RATIO )/ COLLATERAL_PRECISION);
+
   }
-  function getCalculatednewValue(uint256 addedNumberOfToken) internal view returns (uint256) {
-    return (totalSupply() + addedNumberOfToken)*getTslaPrice(); 
+  function getCalculatedNewTotalValue(uint256 addedNumberOfToken) internal view returns (uint256) {
+    return ((totalSupply() + addedNumberOfToken)*getTslaPrice())*PRECISION; 
   }
   function getTslaPrice() public view returns (uint256) {
-    AggregatorV3Interface pricefeed = AggregatorV3Interface(0x1c1e3c8e8e7c5abf5d7e1c245d380c4a4d7e4c8c); // sepoli aggregrator address for the tsla/usd price feed 
-     
+    AggregatorV3Interface pricefeed = AggregatorV3Interface(SEPOLI_TSLA_PRICE_FEED); // sepoli aggregrator address for the tsla/usd price feed 
+     (,int256 price , , ,) =  pricefeed.latestRoundData();
+      return uint256(price)*ADDITIONAL_FEDD_PRECISION ; // SO THAT WE CAN GET THE PRECSION UPTO 18 DECIMALS 
+
   }
 
 }
